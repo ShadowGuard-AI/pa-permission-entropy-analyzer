@@ -59,6 +59,9 @@ def mode_surprise(perm, permission_data):
     """
     if not permission_data:
         return 0.0
+    # list.count inside the per file loop makes the table pass quadratic
+    # in the number of files. Fine for a home directory sample, painful
+    # on a full filesystem tree.
     probability = permission_data.count(perm) / len(permission_data)
     if probability <= 0 or probability >= 1:
         return 0.0
@@ -118,12 +121,20 @@ def analyze_permissions(path, exclude_pattern=None, recursive=False, threshold=0
         else:
             # Traverse the directory
             for root, _, files in os.walk(path):
+                # Skipping with continue does not prune the walk. os.walk still
+                # descends into every subdirectory and I discard each one on arrival,
+                # so a non recursive run still pays the traversal cost and still hits
+                # the unreadable directories below the root.
                 if not recursive and root != path:
                     continue  # Skip subdirectories if not recursive
 
                 for file in files:
                     filepath = os.path.join(root, file)
 
+                    # Path.match anchors from the right, so a bare *.log pattern drops
+                    # matching files at any depth, which surprises people who wrote it
+                    # expecting top level only. Only files are tested; a directory whose
+                    # name matches the pattern is still walked.
                     if exclude_pattern and Path(filepath).match(exclude_pattern):
                         logging.debug(f"Skipping {filepath} due to exclusion pattern.")
                         continue
@@ -161,6 +172,10 @@ def analyze_permissions(path, exclude_pattern=None, recursive=False, threshold=0
     for filepath, perm in zip(file_paths, permission_data):
          file_entropy = mode_surprise(perm, permission_data)
 
+         # Two deliberate edges meet here: the comparison is strict, so a file
+         # sitting exactly on the threshold is not flagged, and a threshold of
+         # 0 disables flagging outright instead of flagging everything above
+         # zero surprise.
          if file_entropy > threshold and threshold > 0:  #Only highlight if threshold > 0, prevents always highlighting.
              table.add_row(Text(filepath, style="red"), str(oct(perm)), f"{file_entropy:.4f}")
              high_entropy_files.append(filepath)
